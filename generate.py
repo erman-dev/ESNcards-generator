@@ -1,207 +1,204 @@
-#!/usr/bin/env python3
-
-import argparse
 import csv
-import cv2
 import logging
+import argparse
 import os
-import re
-import sys
-import tempfile
 
-from datetime import date
+from dataclasses import dataclass
+from typing import List
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Image
+from reportlab.lib.units import mm
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase import pdfmetrics
 
-from config import PrintMode, PrintDirection, EqualizeHistMode, CardSpacing, Config
+from config import Config, PrintMode, TextBlock, PhotoBlock, PageConfig
 from facedetector import FaceDetector
-from pdfprinter import PDFPrinter, DelimiterStyle
 
-logging.basicConfig(filename='/dev/stdout/',
-                    format='[%(asctime)s] %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
-                    level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
+pdfmetrics.registerFont(TTFont('Lato', './fonts/Lato-Regular.ttf'))
 
-class PersonInfo:
-    name = ""
-    nationality = ""
-    birthday = None
-    faculty = "VUT Brno"
-    section = "ESN VUT Brno"
-    validity = None
-    before_arrival = ""
-
-    def __init__(self, row):
-        self.parse(row)
-
-    def parse(self, row):
-        self.name = row["name"]
-        self.nationality = row["country"]
-        self.birthday = date(int("20" + row["Y0"] + row["Y1"]), int(row["M0"] + row["M1"]), int(row["D0"] + row["D1"]))       # FIXME fix the dirty year hack (20xx) - download_images.py does not export first two numbers of the year
-        self.validity = date(int("20" + row["TY0"] + row["TY1"]), int(row["TM0"] + row["TM1"]), int(row["TD0"] + row["TD1"])) # FIXME fix the dirty year hack (20xx) - download_images.py does not export first two numbers of the year
-        self.before_arrival = row["before_arrival"]
+@dataclass
+class StudentInfo:
+    name: str
+    date_of_birth: str
+    nationality: str
+    today: str
+    img_destination: str
+    section: str = Config.section
+    university: str = Config.university
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-i', '--imgpath', default=Config.imgpath, help=f'Folder with images to be processed.')
-    parser.add_argument('-p', '--peoplecsv', default=Config.peoplecsv, help=f'CSV file with students and their details.')
-    parser.add_argument('-o', '--output', default=argparse.SUPPRESS, help=f'Output file. (default: {Config.output})')
-    parser.add_argument('-m', '--mode', type=PrintMode, choices=list(PrintMode), default=Config.mode, help=f'Printing mode.')
-    parser.add_argument('-d', '--direction', type=PrintDirection, choices=list(PrintDirection), default=Config.direction, help=f'Printing direction: {PrintDirection.NORMAL} - TOP -> BOTTOM, {PrintDirection.REVERSED} - BOTTOM -> TOP')
-    parser.add_argument('-e', '--equalizehist', type=EqualizeHistMode, choices=list(EqualizeHistMode), default=Config.equalizehist, help=f'Equalize histogram. Modes: \n\t{EqualizeHistMode.CLAHE} - Contrast Limited Adaptive Histogram Equalization, {EqualizeHistMode.HEQ_YUV} - Global Histogram Equalization (YUV), {EqualizeHistMode.HEQ_HSV} - Global Histogram Qqualization (HSV), {EqualizeHistMode.OTHER} - Placeholder for tests.')
-    parser.add_argument('-c', '--crop', help=f'Crop images using face detection.', action='store_true')
-    parser.add_argument('--interactive', help=f'Ask which image to use each time - original, or cropped.', action='store_true')
+class Generate:
+    """Class that facilitates generation of PDFs used to
+    make ESN cards. Itcan output either PDF with text details 
+    or with pohtos of the students."""
 
-    args, rest = parser.parse_known_args()
-    sys.argv = sys.argv[:1] + rest
+    students: List[StudentInfo] = list()
+    args: argparse.Namespace
 
-    Config.setup(args)
+    def parse_arguments(self):
+        """Load arguments from CLI"""
+        parser = argparse.ArgumentParser(
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+        parser.add_argument('-i', '--imgpath', default=Config.imgpath,
+                            help=f'Folder with images to be processed.')
+        parser.add_argument('-p', '--csv',
+                            dest="student_csv_path",
+                            default=Config.student_csv_path,
+                            help=f'CSV file with students and their details.')
+        parser.add_argument('-o', '--output',
+                            default=Config.output,
+                            help=f'Output PDF file')
+        parser.add_argument('-m', '--mode',
+                            type=PrintMode, choices=list(PrintMode),
+                            default=PrintMode.TEXT_ONLY,
+                            help=f'Printing mode - text or images')
+        return parser.parse_args()
 
-def load_images():
-    try:
-        return sorted([fn for fn in os.listdir(Config.imgpath) if fn.endswith(Config.imgextensions)])
-    except:
-        logger.error(f"Getting images from directory '{Config.imgpath}' failed.")
-        sys.exit(1)
+    def __init__(self):
+        """Main run of the program"""
+        self.args = self.parse_arguments()
+        self.students = self.load_students(self.args.student_csv_path)
+        log.info(f"Loaded {len(self.students)} from csv file")
 
-def get_image(name):
-    foundImgs = [f for f in os.listdir(Config.imgpath) if re.match(rf".*{name}.*", f) and any(f.endswith(ext) for ext in Config.imgextensions)]
-    logger.debug(f"Matched photos: {foundImgs}")
+        if self.args.mode == PrintMode.TEXT_ONLY:
+            self.create_text_pdf(self.args.output)
 
-    if len(foundImgs) == 1:
-        return foundImgs[0]
+        elif self.args.mode == PrintMode.PHOTO_ONLY:
+            self.create_photo_pdf(self.args.output)
 
-    if not foundImgs:
-        return None
+        log.info("Created PDF file with mode "
+                 f"{self.args.mode} at {self.args.output}")
 
-    # We found more images...choose one
-    i = 0
-    for img in foundImgs:
-        print(f"[{i}] " + img)
-        i += 1
+    def load_students(self, csv_path: str) -> List[StudentInfo]:
+        """Loads processed data from intermediary students.cv file,
+        this file was generated dy download_photos.py"""
+        with open(csv_path, "r") as f:
+            csv_reader = csv.reader(f)
+            students = [StudentInfo(*line) for line in csv_reader]
+        return students
 
-    print("Which image should be used?")
-    i = input("Enter one number [0]: ")
+    def generate_text_subtable(self, si: StudentInfo) -> Table:
+        """Generates contents of single cell in a table used in text mode."""
+        table_data = [[si.name, ""],
+                      [si.nationality, si.date_of_birth],
+                      [si.university, ""],
+                      [si.section, si.today]]
+        table = Table(table_data,
+                      colWidths=(TextBlock.width1*mm, TextBlock.width2*mm),
+                      rowHeights=[TextBlock.row_height*mm]*4)
+        table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), TextBlock.font),
+            ("FONTSIZE", (0, 0), (-1, -1), TextBlock.font_size),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0.5*mm),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0.5*mm)
+        ]))
+        return table
 
-    if i.isnumeric() and i < len(foundImgs) and i > 0:
-        i = int(i)
-    else:
-        logger.warning(f"'{i}' is not an integer! Choosing the first image.")
-        i = 0
+    def generate_photo_subtable(self, si: StudentInfo) -> Table:
+        """Generates contents of single cell in a table used in photo mode."""
+        img_detector = FaceDetector(si.img_destination, Config.casc_path)
+        img_cropped = img_detector.run()
+        img = Image(img_cropped,
+                    width=PhotoBlock.width*mm,
+                    height=PhotoBlock.height*mm)
+        table_data = [[img], [f"{si.name}"]]
+        table = Table(table_data,
+                      colWidths=(PhotoBlock.width*mm),
+                      rowHeights=[PhotoBlock.height*mm, 2*mm])
+        table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), PhotoBlock.font),
+            ("FONTSIZE", (0, 0), (-1, -1), PhotoBlock.font_size*mm),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER")
+        ]))
+        return table
 
-    return foundImgs[i]
+    def generate_text_table(self, students: List[StudentInfo]) -> List[Table]:
+        """Generates data used to build table in text mode"""
+        table_data = list()
+        for student in students:
+            table_data.append(self.generate_text_subtable(student))
+        return table_data
 
-def do():
-    # TODO try-catch
-    pp = PDFPrinter(Config.output)
+    def generate_photo_table(self, students: List[StudentInfo]) -> List[Table]:
+        """Generates data used to build table in photo mode"""
+        table_data = list()
+        for student in students:
+            table_data.append(self.generate_photo_subtable(student))
+        return table_data
 
-    xLeftLimit = Config.spacing.xLeftLimit
-    yTopLimit = Config.spacing.yTopLimit
-    xRightLimit = Config.spacing.xRightLimit
-    yBottomLimit = Config.spacing.yBottomLimit
-    xIncrement = Config.spacing.xIncrement
-    yIncrement = Config.spacing.yIncrement
+    def create_text_pdf(self, output_path: os.path) -> None:
+        """Generates a PDF when in text mode"""
+        doc = SimpleDocTemplate(output_path,
+                                pagesize=PageConfig.page_size,
+                                leftMargin=PageConfig.margin_left,
+                                rightMargin=PageConfig.margin_right,
+                                topMargin=PageConfig.margin_top,
+                                bottomMargin=PageConfig.margin_bottom)
 
-    if Config.direction == PrintDirection.NORMAL:
-        xInit= xLeftLimit
-        yInit = yTopLimit
-    else:
-        xInit = xRightLimit
-        yInit = yBottomLimit
+        table_data = self.generate_text_table(self.students)
 
-    x,y = xInit, yInit
+        # Number of columns that can fir in 210mm
+        num_columns = 210 // TextBlock.width
+        table_matrix = [table_data[i:i + num_columns]
+                        for i in range(0, len(table_data), num_columns)]
 
-    # For debug message only.
-    i = 0
-    with open(Config.peoplecsv) as f:
-        rows = sum(1 for line in f)-1
+        col_widths = [TextBlock.width * mm] * num_columns
+        row_heights = [TextBlock.height * mm] * len(table_matrix)
 
-    with open(Config.peoplecsv, newline='') as csvfile:
-        reader = csv.DictReader(csvfile)
-        data = sorted(reader, key=lambda d: (d['country'], d['name']))
-        for row in data:
-            i += 1
+        main_table = Table(table_matrix,
+                           colWidths=col_widths,
+                           rowHeights=row_heights)
+        main_table.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+            ("TOPPADDING", (0, 0), (-1, -1), 1*mm),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1*mm),
+            ("LEFTPADDING", (0, 0), (-1, -1), 1*mm),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 1*mm),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ]))
+        doc.build([main_table])
 
-            pi = PersonInfo(row)
+    def create_photo_pdf(self, output_path: os.path) -> None:
+        """Generates a PDF when in photo mode"""
+        doc = SimpleDocTemplate(output_path,
+                                pagesize=PageConfig.page_size,
+                                leftMargin=PageConfig.margin_left,
+                                rightMargin=PageConfig.margin_right,
+                                topMargin=PageConfig.margin_top,
+                                bottomMargin=PageConfig.margin_bottom)
 
-            logger.info(f"Exporting ({i}/{rows}) {pi.name}")
+        table_data = self.generate_photo_table(self.students)
 
-            # Print photo, if needed
-            if Config.mode != PrintMode.TEXT_ONLY:
-                try:
-                    foundImg = get_image(pi.name)
+        # Number of columns that can fir in 210mm
+        num_columns = 210 // (PhotoBlock.width+1)
+        table_matrix = [table_data[i:i + num_columns]
+                        for i in range(0, len(table_data), num_columns)]
 
-                    # TODO refactor this if statement
-                    if foundImg is None:
-                        logger.error(f"!!! Could not find an image for '{pi.name}'. Skipping photo print...")
-                    else:
-                        imgpath = os.path.join(Config.imgpath, foundImg)
+        col_widths = [(PhotoBlock.width + 2) * mm] * num_columns
+        row_heights = [(PhotoBlock.height + 4) * mm] * len(table_matrix)
 
-                        if Config.interactive or Config.crop or Config.equalizehist:
-                            try:
-                                vis = FaceDetector.run(imgpath, "haarcascade_frontalface_default.xml")
-                                tmpfile = os.path.join(tempfile._get_default_tempdir(), next(tempfile._get_candidate_names()) + ".jpg")
-                                cv2.imwrite(tmpfile, vis)
-                                imgpath = tmpfile
-                            except Exception as e:
-                                logger.error(f"!!! FaceDetector thrown an Exception!\n{str(e)}")
-                                logger.warning(f"Skipping the person completely...")
-                                continue
+        main_table = Table(table_matrix,
+                           colWidths=col_widths,
+                           rowHeights=row_heights)
+        main_table.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+            ("TOPPADDING", (0, 0), (-1, -1), 1*mm),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1*mm),
+            ("LEFTPADDING", (0, 0), (-1, -1), 1*mm),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 1*mm),
+        ]))
+        doc.build([main_table])
 
-                        pp.set_coordintates(x, y)
-                        pp.print_photo(imgpath, pi)
-                except Exception as e:
-                    logger.error(f"!!! Could not print the image!\n{str(e)}")
-
-            # Print person info, if needed
-            if Config.mode != PrintMode.PHOTO_ONLY:
-                xText, yText = x, y
-
-                # If we print both photo and text, move init position of text next to the photo
-                if Config.mode != PrintMode.TEXT_ONLY:
-                    xText += CardSpacing.textDelta
-                    yText += CardSpacing.rowDelta
-
-                pp.set_coordintates(xText, yText)
-                pp.print_person_info(pi)
-
-            # Print person delimiter (for easier cutting of prints)
-            xDelim = x - (Config.spacing.xSpacing / 2.0) # get between cols
-            yDelim = y
-
-            if Config.mode == PrintMode.TEXT_ONLY:
-                # Init position for printing of photos is top-left but for text it's bottom-left
-                # Get one row upper. This little hack is needed as TextBlock is hardcoded and not computed using CardSpacing + Content Spacing
-                yDelim -= (CardSpacing.rowDelta * 0.5)
-            else:
-                # In other modes, move back just part of the spacing (cannot by half because of country printed below the photo)
-                yDelim -= (Config.spacing.ySpacing * 0.2)
-
-            pp.print_delimiter(xDelim, yDelim, DelimiterStyle.FRAME)
-
-            # Compute new coordinates
-            x += xIncrement
-            # Check for need to increment/decrement row
-            if x < xLeftLimit or x > xRightLimit:
-                x = xInit
-                y += yIncrement
-
-            # Check if a new page should be added
-            if y < yTopLimit or y > yBottomLimit:
-                logger.debug(f"Height limit reached. Adding a new page.")
-                y = yInit
-                pp.add_page()
-
-    pp.output()
-    cv2.destroyAllWindows()
-
-def main():
-    parse_args()
-    logger.debug(Config.info())
-
-    #imagelist = load_images()
-
-    do()
 
 if __name__ == "__main__":
-    main()
+    Generate()

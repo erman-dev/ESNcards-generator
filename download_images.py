@@ -1,204 +1,158 @@
-#!/usr/bin/env python3
-
 import csv
-import imghdr
+import logging
 import os
-import sys
-from datetime import datetime
-from shutil import move
-from tempfile import mkstemp
 import pickle
-import os.path
-from googleapiclient.discovery import build
+import requests
+import sys
+
+from datetime import datetime
+from io import BytesIO
+from PIL import Image
+from pillow_heif import register_heif_opener
+
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 
-import requests
-from dateutil.relativedelta import relativedelta
+log = logging.getLogger()
+logging.basicConfig(level=logging.INFO)
 
-SCOPES = [
-    'https://www.googleapis.com/auth/drive.file',
-    'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/drive.file',
-    'https://www.googleapis.com/auth/drive.metadata'
-]
-
-credentials = None
-if os.path.exists('token.pickle'):
-    with open('token.pickle', 'rb') as token:
-        credentials = pickle.load(token)
-
-# If there are no (valid) credentials available, let the user log in.
-if not credentials or not credentials.valid:
-    if credentials and credentials.expired and credentials.refresh_token:
-        credentials.refresh(Request())
-    else:
-        flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', SCOPES)
-        credentials = flow.run_local_server(port=0)
-    # Save the credentials for the next run
-    with open('token.pickle', 'wb') as token:
-        pickle.dump(credentials, token)
-
-service = build('drive', 'v3', credentials=credentials)
+register_heif_opener()
 
 
-def download_file_from_google_drive(file_id, destination):
-    response = requests.get(
-        "https://www.googleapis.com/drive/v3/files/{}?alt=media".format(file_id),
-        params={'id': id},
-        stream=True,
-        headers={'Authorization': 'Bearer {}'.format(credentials.token)},
-        timeout=5
-    )
+class DownloadImages:
 
-    save_response_content(response, destination)
+    credentials: Credentials
+    csv_output: list = list()
 
+    # Select the column where the data is
+    # A->0, B->1, C->2, D->3, E->4,
+    # F->5, G->6, H->7 I->8, K->9
+    NAME_IDX = 1
+    NATIONALITY_IDX = 2
+    DATEOFBIRTH_IDX = 3
+    PHOTOURL_IDX = 4
 
-def get_confirm_token(response):
-    for key, value in response.cookies.items():
-        if key.startswith('download_warning'):
-            return value
+    def __init__(self, csv_file):
+        self.authenticate()
+        self.parse_input_csv(csv_file)
+        self.save_csv_output()
 
-    return None
+    def authenticate(self, token_path: str = "token.pickle", client_secret_path: str = "client_secret.json"):
+        SCOPES = [
+            'https://www.googleapis.com/auth/drive.file',
+            'https://www.googleapis.com/auth/drive',
+            'https://www.googleapis.com/auth/drive.file',
+            'https://www.googleapis.com/auth/drive.metadata'
+        ]
 
-
-def save_response_content(response, destination):
-    CHUNK_SIZE = 32768
-
-    with open(destination, "wb") as f:
-        for chunk in response.iter_content(CHUNK_SIZE):
-            if chunk:  # filter out keep-alive new chunks
-                f.write(chunk)
-
-
-total_lines = 0
-
-
-def replace_and_count(file_path, pattern, subst):
-    global total_lines
-    # Create temp file
-    fh, abs_path = mkstemp()
-    with os.fdopen(fh, 'w', encoding='utf-8') as new_file:
-        with open(file_path, encoding='utf-8') as old_file:
-            for line in old_file:
-                new_file.write(line.replace(pattern, subst))
-                total_lines += 1
-    # Remove original file
-    os.remove(file_path)
-    # Move new file
-    move(abs_path, file_path)
-
-
-line_number = 0
-
-if len(sys.argv) != 2 and len(sys.argv) != 3:
-    print('ERROR: Run as "python ' + sys.argv[0] + ' CSV_FILE [OUT_FILE]"')
-    sys.exit(1)
-
-replace_and_count(sys.argv[1], '","', '";"')
-
-
-def open_output():
-    if len(sys.argv) == 3:
-        return open(sys.argv[2], "a", encoding='utf-8')
-    else:
-        return open("students.csv", "a", encoding='utf-8')
-
-
-def parse_name(name) -> str:
-    if False and len(name) > 30:
-        print('WARNING: Name "' + name + '" longer than 30 characters!')
-        names = name.split()
-        i = 0
-        for n in names:
-            print("[" + str(i) + "] " + n)
-            i += 1
-        print("Which names should I use? (use numbers separated by ',')")
-        text = input("Names: ")
-        names_to_use = text.split(",")
-        name = ""
-        for ntu in names_to_use:
-            name += " " + names[int(ntu)]
-        name = name[1:]
-
-    # Delete spaces at the beginning
-    while name[0].isspace():
-        name = name[1:]
-
-    # Delete spaces at the end
-    while name[-1].isspace():
-        name = name[:-1]
-
-    return name
-
-
-def parse_country(country) -> str:
-    # Delete spaces at the beginning
-    while country[0].isspace():
-        country = country[1:]
-    # Delete spaces at the end
-    while country[-1].isspace():
-        country = country[:-1]
-
-    return country
-
-
-csv_output = open_output()
-
-with open(sys.argv[1], "r", encoding='utf-8') as f:
-    csv_reader = csv.reader(f, delimiter=',')
-    dirName = 'pictures'
-    try:
-        # Create target Directory
-        os.mkdir(dirName)
-        print("Directory " + dirName + " Created ")
-    except:
-        print("Directory " + dirName + " already exists")
-    for line in csv_reader:
-        if line_number == 0:
-            csv_output.write("name,country,D0,D1,M0,M1,Y0,Y1,")
-            csv_output.write("TD0,TD1,TM0,TM1,TY0,TY1,before_arrival\n")
+        if os.path.exists(token_path):
+            with open(token_path, 'rb') as token:
+                credentials = pickle.load(token)
         else:
-            TIMESTAMP_IDX = 0
-            EMAIL_IDX = 1
-            NAME_IDX = 2
-            COUNTRY_IDX = 3
-            DATEOFBIRTH_IDX = 4
-            PHOTOURL_IDX = 5
-            LA_IDX = 6
-            REFERRAL_IDX = 7
-            BEFOREARRIVAL_IDX = 8
+            credentials = None
 
-            print(str(line_number) + "/" + str(total_lines - 1))
-            print(line)
-            name = parse_name(line[NAME_IDX])
-            country = parse_country(line[COUNTRY_IDX])
+        # If there are no (valid) credentials available, let the user log in.
+        if not credentials or not credentials.valid:
+            if credentials and credentials.expired and credentials.refresh_token:
+                credentials.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    client_secret_path, SCOPES)
+                credentials = flow.run_local_server(port=0)
+            # Save the credentials for the next run
+            with open(token_path, 'wb') as token:
+                pickle.dump(credentials, token)
 
-            birth_date = datetime.strptime(line[DATEOFBIRTH_IDX], "%d.%m.%Y").date()
-            today = datetime.now()
-            age = relativedelta(datetime.now(), birth_date).years
-            if age < 18:
-                print("ERROR: " + name + " younger than 18! (" + str(age) + ")")
+        self.credentials = credentials
 
-            csv_output.write(
-                f'\"{name}\",\"{country}\",'
-                f'{",".join(birth_date.strftime("%d%m%y"))},'
-                f'{",".join(today.strftime("%d%m%y"))},'
-                f'{line[BEFOREARRIVAL_IDX]}\n'
-            )
-            file_id = line[PHOTOURL_IDX][line[PHOTOURL_IDX].find("id=") + 3:]
+    def download_file(self, file_id: str, destination: str):
+        response = requests.get(
+            "https://www.googleapis.com/drive/v3/files/{}?alt=media".format(
+                file_id),
+            params={'id': id},
+            stream=True,
+            headers={'Authorization': 'Bearer {}'.format(
+                self.credentials.token)},
+            timeout=10
+        )
 
-            try:
-                download_file_from_google_drive(file_id, name)
-                file_type = imghdr.what(name)
-                if not file_type:
-                    print(
-                        "Couldn't find out the picture type, please add it manually to the end of the filename for " + name)
-                else:
-                    move(name, os.path.join('pictures', name + '.' + file_type))
-            except Exception as e:
-                print("ERROR: Exception trown. ", e)
-        line_number += 1
-        csv_output.flush()
+        # Handle problems with download
+        if response.status_code != 200:
+            log.error(
+                f"Downloading file ID {file_id} failed! The picture wont be saved!")
+            log.error(response.text)
+            return
 
-csv_output.close()
+        if "image" not in response.headers["Content-Type"]:
+            log.info(response.headers["Content-Type"])
+            log.error(
+                f"""File ID {file_id} is not a picture! 
+                They probably uploaded the wrong thing, like PDF or something. 
+                You will nedd to get it from them and save it to the picture folder 
+                under '{destination}'""")
+
+        # This conversion is needed in case users upload HEIF or other format photos.
+        # The face detector can only take JPEG files
+        datatype = response.headers.get("Content-Type")
+        if datatype == "image/jpeg":
+            with open(destination, "wb") as f:
+                f.write(response.content)
+        else:
+            log.warning(
+                f"The user is using weird photo format [{datatype}]. Attempting covnersion.")
+            buf = BytesIO(response.content)
+            img = Image.open(buf)
+            img.convert("RGB").save(destination, "JPEG")
+
+        log.debug(f"Saved {destination}")
+
+    def get_file_id(self, file_url: str) -> str:
+        # Example https://drive.google.com/open?id=1REKpuL5TUKwNvupg9_f5EzAIrcFPGt
+        # So only return stuff after "="
+        return file_url.split("=")[1]
+
+    def parse_date_of_birth(self, raw_date: str) -> datetime:
+        try:
+            dt = datetime.strptime(raw_date, "%m/%d/%Y").date()
+            return dt.strftime("%d  %m  %y")
+        except ValueError:
+            log.error(f"Value '{raw_date}' does not match the mm/dd/yyyy date format!")
+            exit()
+        
+
+    def save_csv_output(self, filename: str = "students.csv"):
+        with open(filename, "w+") as f:
+            csv_writer = csv.writer(f)
+            for row in self.csv_output:
+                csv_writer.writerow(row)
+
+    def process_line(self, line: str):
+        name = line[self.NAME_IDX].strip()
+        date_of_birth = self.parse_date_of_birth(line[self.DATEOFBIRTH_IDX])
+        nationality = line[self.NATIONALITY_IDX].strip().capitalize()
+        file_id = self.get_file_id(line[self.PHOTOURL_IDX])
+        today = datetime.now().strftime("%d  %m  %y")
+
+        log.info(f"Processing: {name}")
+
+        img_destination = os.path.join(os.getcwd(), "pictures", f"{name}.jpg")
+        if not os.path.exists(img_destination):
+            self.download_file(file_id, img_destination)
+
+        self.csv_output.append(
+            [name, date_of_birth, nationality, today, img_destination])
+
+    def parse_input_csv(self, csv_path):
+        """Opens the file exported from google sheets, processes the input data
+        and downloads all images from drive and aves them to folder for generation."""
+        with open(csv_path, "r") as f:
+            csv_reader = csv.reader(f)
+            next(csv_reader)
+            for line in csv_reader:
+                log.debug(f"Processing {line}")
+                self.process_line(line)
+
+
+if __name__ == "__main__":
+    DownloadImages(sys.argv[1])
