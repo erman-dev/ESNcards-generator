@@ -117,9 +117,9 @@ class DownloadImages:
             dt = datetime.strptime(raw_date, "%m/%d/%Y").date()
             return dt.strftime("%d  %m  %y")
         except ValueError:
-            log.error(f"Value '{raw_date}' does not match the mm/dd/yyyy date format!")
+            log.error(
+                f"Value '{raw_date}' does not match the mm/dd/yyyy date format!")
             exit()
-        
 
     def save_csv_output(self, filename: str = "students.csv"):
         with open(filename, "w+") as f:
