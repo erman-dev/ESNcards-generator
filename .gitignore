@@ -78,4 +78,6 @@ pictures/
 client_secret.json
 token.pickle
 
-fonts
+.venv/
+*.csv
+*.pickle
