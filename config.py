@@ -9,7 +9,6 @@ class Config:
     university: str = "VUT Brno"
     imgpath: os.path = os.path.join(os.getcwd(), "pictures")
     student_csv_path: os.path = os.path.join(os.getcwd(), "students.csv")
-    output: os.path = os.path.join(os.getcwd(), "output.pdf")
     casc_path: os.path = "./haarcascade_frontalface_default.xml"
 
 

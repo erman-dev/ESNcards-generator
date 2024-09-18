@@ -4,6 +4,7 @@ import argparse
 import os
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import List
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Image
@@ -49,7 +50,6 @@ class Generate:
                             default=Config.student_csv_path,
                             help=f'CSV file with students and their details.')
         parser.add_argument('-o', '--output',
-                            default=Config.output,
                             help=f'Output PDF file')
         parser.add_argument('-m', '--mode',
                             type=PrintMode, choices=list(PrintMode),
@@ -62,12 +62,18 @@ class Generate:
         self.args = self.parse_arguments()
         self.students = self.load_students(self.args.student_csv_path)
         log.info(f"Loaded {len(self.students)} from csv file")
+        date = datetime.now()
 
         if self.args.mode == PrintMode.TEXT_ONLY:
-            self.create_text_pdf(self.args.output)
+            filename = f"output-text-{date.strftime('%y_%m_%d_%H_%M')}.pdf"
+            filepath = os.path.join(os.getcwd(), "output", filename)
+            self.create_text_pdf(filepath)
 
         elif self.args.mode == PrintMode.PHOTO_ONLY:
-            self.create_photo_pdf(self.args.output)
+            filename = f"output-photo-{date.strftime('%y_%m_%d_%H_%M')}.pdf"
+            filepath = os.path.join(os.getcwd(), "output", filename)
+            self.create_photo_pdf(filepath)
+
 
         log.info("Created PDF file with mode "
                  f"{self.args.mode} at {self.args.output}")
