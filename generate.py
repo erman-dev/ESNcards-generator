@@ -65,18 +65,18 @@ class Generate:
         date = datetime.now()
 
         if self.args.mode == PrintMode.TEXT_ONLY:
-            filename = f"output-text-{date.strftime('%y_%m_%d_%H_%M')}.pdf"
+            filename = f"output-text-{date.strftime('%Y_%m_%d_%H_%M')}.pdf"
             filepath = os.path.join(os.getcwd(), "output", filename)
             self.create_text_pdf(filepath)
 
         elif self.args.mode == PrintMode.PHOTO_ONLY:
-            filename = f"output-photo-{date.strftime('%y_%m_%d_%H_%M')}.pdf"
+            filename = f"output-photo-{date.strftime('%Y_%m_%d_%H_%M')}.pdf"
             filepath = os.path.join(os.getcwd(), "output", filename)
             self.create_photo_pdf(filepath)
 
 
         log.info("Created PDF file with mode "
-                 f"{self.args.mode} at {self.args.output}")
+                 f"{self.args.mode} at {filepath}")
 
     def load_students(self, csv_path: str) -> List[StudentInfo]:
         """Loads processed data from intermediary students.cv file,
