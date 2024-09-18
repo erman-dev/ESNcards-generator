@@ -30,34 +30,40 @@ the Application form and data are in different columns. This usually happens wit
 and the column names (Name, Email, ...)
 
 
-### Download photos
+### Before downloading photos
 
+This only needs to be done once in the beginning.
 File `client_secret.json` (placed in project root) is needed to access Google Drive, you can get one from
 [Google APIs](https://console.developers.google.com/apis/credentials), especially
-OAuth 2.0
-Client IDs (with all Google Drive perms) for your own project.
-This only needs to be done once in the beginning.
+OAuth 2.0 Client IDs (with all Google Drive perms) for your own project.
 
-Then run the following command:
+### Download photos
+
+Make sure you have set up the credentials from the previous step.
+Then place .csv file containg the list of new student data you want to download
+to the `input/` folder.
+
+Finally, run the following command:
 
 ```
-python3 download_images.py <downloaded_form_file>.csv
+python3 download_images.py input/<downloaded_form_file>.csv
 ```
 
-In case of unknown format, photo is stored in project root. Before next steps, it's needed to reformat the file and move into `pictures` directory under the same name.
+Make sure restrict input data fomrat in the google sheet to images. This script should accept all valid
+image formats and converts them to jpeg in the background.
 
 ### Generating ESNcard print files
 
 So the typical usage would be:
 
-To render just labels to print them on transparent foil, output is `output-text.pdf`:
+To render just labels to print them on transparent foil, output is `output-text-<datetime>.pdf`:
 ```
-./generate.py --mode text
+python3 generate.py --mode text
 ```
 
-To render just photos to print, output is `output-photo.pdf`:
+To render just photos to print, output is `output-photo-<datetime>.pdf`:
 ```
-./generate.py --mode photo
+python3 generate.py --mode photo
 ```
 
 In photo mode, the script sometimes detects multiple faces. U need to looks in folder `decisions/`
