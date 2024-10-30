@@ -96,7 +96,7 @@ class DownloadImages:
         # The face detector can only take JPEG files
         datatype = response.headers.get("Content-Type")
         if datatype == "image/jpeg":
-            with open(destination, "wb") as f:
+            with open(destination, "wb+") as f:
                 f.write(response.content)
         else:
             log.warning(
