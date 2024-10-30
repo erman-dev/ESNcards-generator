@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "esncard-generator"
+version = "0.1.0"
+description = "Generator of text and image PDFs used for making ESNcards."
+authors = ["Roman Krček <rom4n.krcek@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+requests = "^2.32.3"
+google-auth = "^2.35.0"
+pydantic-settings = "^2.6.0"
+reportlab = "^4.2.5"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
