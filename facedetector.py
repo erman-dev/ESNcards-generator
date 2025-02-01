@@ -4,7 +4,7 @@ import os
 import pickle
 import numpy as np
 
-from PIL import Image, ImageFile, ExifTags, ImageOps
+from PIL import Image, ImageFile, ImageOps
 from io import BytesIO
 from typing import List
 
